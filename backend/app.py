@@ -178,20 +178,20 @@ def create_post():
             poster = LinkedIn(content, image_urls=img_urls_arg)
             if not poster.channel_id:
                 return (0, "LinkedIn: Failed (No valid channel)", False)
-            poster.create_post()
-            return (0, f"LinkedIn: Success ({poster.channel_name})", True)
+            link = poster.create_post()
+            return (0, f"LinkedIn: Success ({poster.channel_name})", True, link)
         except Exception as e:
-            return (0, f"LinkedIn: Error ({str(e)})", False)
+            return (0, f"LinkedIn: Error ({str(e)})", False, None)
 
     def _x_job():
         try:
             poster = XPoster(content, image_urls=img_urls_arg)
             if not poster.channel_id:
                 return (1, "X: Failed (No valid channel)", False)
-            poster.create_post()
-            return (1, f"X: Success ({poster.channel_name})", True)
+            link = poster.create_post()
+            return (1, f"X: Success ({poster.channel_name})", True, link)
         except Exception as e:
-            return (1, f"X: Error ({str(e)})", False)
+            return (1, f"X: Error ({str(e)})", False, None)
 
     try:
         jobs = []
@@ -200,23 +200,30 @@ def create_post():
         if "x" in platforms:
             jobs.append(_x_job)
 
+        links = {}
         if len(jobs) == 1:
-            prio, msg, ok = jobs[0]()
+            prio, msg, ok, link = jobs[0]()
             results.append(msg)
             if ok:
                 success_count += 1
+                if link:
+                    platform_name = "linkedin" if prio == 0 else "x"
+                    links[platform_name] = link
         elif len(jobs) == 2:
             with ThreadPoolExecutor(max_workers=2) as ex:
                 futs = [ex.submit(j) for j in jobs]
                 batch = [f.result() for f in futs]
             batch.sort(key=lambda x: x[0])
-            for _, msg, ok in batch:
+            for prio, msg, ok, link in batch:
                 results.append(msg)
                 if ok:
                     success_count += 1
+                    if link:
+                        platform_name = "linkedin" if prio == 0 else "x"
+                        links[platform_name] = link
 
         if success_count > 0:
-            return jsonify({"success": True, "message": " | ".join(results)})
+            return jsonify({"success": True, "message": " | ".join(results), "links": links})
         else:
             return jsonify({"success": False, "message": "Failed to post: " + " | ".join(results)}), 400
 

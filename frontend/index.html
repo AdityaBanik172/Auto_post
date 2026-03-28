@@ -140,11 +140,33 @@
         }
     }
 
-    function showAlert(message, isSuccess) {
+    function showAlert(message, isSuccess, links = {}) {
         const alertBox = document.getElementById('alertBox');
         const alertIcon = document.getElementById('alertIcon');
         const alertMessage = document.getElementById('alertMessage');
-        alertMessage.textContent = message;
+        
+        // Clear previous content but keep the icon and message span
+        alertMessage.innerHTML = `<span>${message}</span>`;
+        
+        if (isSuccess && Object.keys(links).length > 0) {
+            const linksContainer = document.createElement('div');
+            linksContainer.className = 'mt-3 flex flex-wrap gap-2';
+            
+            for (const [platform, url] of Object.entries(links)) {
+                const linkBtn = document.createElement('a');
+                linkBtn.href = url;
+                linkBtn.target = '_blank';
+                linkBtn.className = 'inline-flex items-center px-3 py-1 bg-white border border-emerald-200 rounded-lg text-xs font-semibold text-emerald-700 hover:bg-emerald-100 transition shadow-sm';
+                
+                let iconStr = platform === 'linkedin' ? 
+                    '<span class="bg-blue-600 text-white rounded p-0.5 mr-1.5 text-[10px]">in</span>' : 
+                    '<span class="bg-black text-white rounded p-0.5 mr-1.5 text-[10px] uppercase font-bold">X</span>';
+                
+                linkBtn.innerHTML = `${iconStr} View on ${platform === 'linkedin' ? 'LinkedIn' : 'X'}`;
+                linksContainer.appendChild(linkBtn);
+            }
+            alertMessage.appendChild(linksContainer);
+        }
         alertBox.className = `p-4 rounded-xl border shadow-sm flex items-center space-x-3 transition-all mb-8 ${isSuccess ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'}`;
         if (isSuccess) {
             alertIcon.innerHTML = `<path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>`;
@@ -286,7 +308,7 @@
             });
             
             const data = await response.json();
-            showAlert(data.message, data.success);
+            showAlert(data.message, data.success, data.links);
             
             if (data.success) {
                 // Reset form
