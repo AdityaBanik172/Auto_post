@@ -233,18 +233,12 @@ def create_post():
             jobs.append(_instagram_job)
 
         links = {}
-        if len(jobs) == 1:
-            prio, msg, ok, link = jobs[0]()
-            results.append(msg)
-            if ok:
-                success_count += 1
-                if link:
-                    platform_name = "linkedin" if prio == 0 else ("x" if prio == 1 else "instagram")
-                    links[platform_name] = link
-        elif len(jobs) == 2:
-            with ThreadPoolExecutor(max_workers=2) as ex:
+        if jobs:
+            max_workers = min(len(jobs), 4)
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 futs = [ex.submit(j) for j in jobs]
                 batch = [f.result() for f in futs]
+            
             batch.sort(key=lambda x: x[0])
             for prio, msg, ok, link in batch:
                 results.append(msg)
