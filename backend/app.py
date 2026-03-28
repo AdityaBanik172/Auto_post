@@ -23,11 +23,23 @@ except ImportError:
 _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent
 
-# Try to find the frontend directory in common locations
-FRONTEND_DIR = _REPO_ROOT / "frontend"
-if not FRONTEND_DIR.exists():
-    # If running from root, frontend might be relative to cwd
-    FRONTEND_DIR = Path.cwd() / "frontend"
+def _find_frontend():
+    possible_locations = [
+        _REPO_ROOT / "frontend",
+        Path.cwd() / "frontend",
+        Path("/var/task") / "frontend",
+        _HERE.parent.parent / "frontend"
+    ]
+    for loc in possible_locations:
+        if loc.exists() and (loc / "index.html").exists():
+            return loc
+    return None
+
+FRONTEND_DIR = _find_frontend()
+
+print(f"[DEBUG] Started at: {Path(__file__).resolve()}")
+print(f"[DEBUG] CWD: {Path.cwd()}")
+print(f"[DEBUG] FRONTEND_DIR: {FRONTEND_DIR}")
 
 # Load .env but don't crash if it's missing (Vercel uses system secrets)
 env_path = _REPO_ROOT / ".env"
@@ -35,6 +47,7 @@ if env_path.exists():
     load_dotenv(env_path)
 else:
     load_dotenv() # Fallback to standard search
+
 
 def _backend_api_base_from_env() -> str:
     """BACKEND_API_BASE_URL (or legacy PUBLIC_API_BASE_URL): full API root including /api."""
@@ -52,6 +65,8 @@ def _backend_api_base_for_request() -> str:
     explicit = _backend_api_base_from_env()
     if explicit:
         return explicit
+    if not request:
+        return "/api"
     return request.host_url.rstrip("/") + "/api"
 
 
@@ -62,16 +77,31 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 CORS(app)
 
 # Max upload size 10MB
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
 
 @app.route("/")
 def serve_dashboard():
     """Inject BACKEND_API_BASE_URL into the page so the browser knows where to call the API."""
-    html = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
-    base = _backend_api_base_for_request()
-    inject = f"<script>window.__BACKEND_API_BASE__ = {json.dumps(base)};</script>"
-    html = html.replace("<!-- BACKEND_CONFIG_INJECT -->", inject)
-    return Response(html, mimetype="text/html; charset=utf-8")
+    if not FRONTEND_DIR or not (FRONTEND_DIR / "index.html").exists():
+        # Prevent crash, return useful info instead
+        return f"""
+        <html><body>
+            <h1>Frontend Not Found</h1>
+            <p>CWD: {Path.cwd()}</p>
+            <p>Repo Root: {_REPO_ROOT}</p>
+            <p>Detected Frontend: {FRONTEND_DIR}</p>
+            <p>Check "Logs" in Vercel Dashboard for details!</p>
+        </body></html>
+        """, 500
+
+    try:
+        html = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+        base = _backend_api_base_for_request()
+        inject = f"<script>window.__BACKEND_API_BASE__ = {json.dumps(base)};</script>"
+        html = html.replace("<!-- BACKEND_CONFIG_INJECT -->", inject)
+        return Response(html, mimetype="text/html; charset=utf-8")
+    except Exception as e:
+        return f"Error serving dashboard: {str(e)}", 500
 
 
 @app.route('/api/status', methods=['GET'])
