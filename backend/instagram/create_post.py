@@ -84,6 +84,12 @@ class InstagramPoster:
             print(f"[OK] Instagram: channel {self.channel_name} [{self.channel_id}]")
 
     def create_post(self):
+        if not self.image_urls:
+            raise ValueError(
+                "Instagram requires at least one image/video for publication. "
+                "Please upload an image and try again."
+            )
+
         mutation = """
         mutation CreateTestPost($input: CreatePostInput!) {
             createPost(input: $input) {
@@ -142,7 +148,15 @@ class InstagramPoster:
             raise Exception(f"Buffer API Error: {error_msg}")
 
         post_data = post_result.get("post", {})
-        return post_data.get("externalLink")
+        link = post_data.get("externalLink")
+        
+        if not link:
+            # If link is null, it usually means Buffer moved it to 'Notifications' or 'Drafts'.
+            return (
+                "Created (Check Buffer app for mobile notification - "
+                "direct posting may be restricted for this account type)"
+            )
+        return link
 
 if __name__ == "__main__":
     post_content = f"Hello! This is a test post from my custom Buffer API script! Time: {datetime.datetime.now()}"

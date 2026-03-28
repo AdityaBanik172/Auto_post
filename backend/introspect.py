@@ -10,17 +10,9 @@ url = os.getenv("GRAPHQL_URL", "https://api.buffer.com/graphql")
 
 query = """
 query {
-  __type(name: "InstagramPostMetadataInput") {
-    inputFields {
+  __type(name: "ShareMode") {
+    enumValues {
       name
-      type {
-        kind
-        name
-        ofType {
-          kind
-          name
-        }
-      }
     }
   }
 }
@@ -34,13 +26,9 @@ headers = {
 try:
     resp = requests.post(url, json={"query": query}, headers=headers, timeout=10)
     data = resp.json()
-    fields = data["data"]["__type"]["inputFields"]
-    with open("insta_fields.txt", "w") as f:
-        f.write("ALL fields for InstagramPostMetadataInput:\n")
-        for field in fields:
-            is_required = field["type"]["kind"] == "NON_NULL"
-            type_info = field["type"]["name"] if field["type"]["name"] else field["type"]["ofType"]["name"]
-            f.write(f" - {field['name']}: {type_info} ({'MANDATORY' if is_required else 'OPTIONAL'})\n")
-    print("Results saved to insta_fields.txt")
+    values = [v["name"] for v in data["data"]["__type"]["enumValues"]]
+    print("Enum values for ShareMode:")
+    for v in values:
+        print(f"- {v}")
 except Exception as e:
     print(f"Error: {e}")
