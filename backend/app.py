@@ -9,9 +9,15 @@ from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from linkedin.create_post import LinkedIn
-from linkedin.imgbb_client import upload_image_to_imgbb
-from X.create_post import XPoster
+try:
+    from linkedin.create_post import LinkedIn
+    from linkedin.imgbb_client import upload_image_to_imgbb
+    from X.create_post import XPoster
+except ImportError:
+    # If run as a package (on Vercel)
+    from .linkedin.create_post import LinkedIn
+    from .linkedin.imgbb_client import upload_image_to_imgbb
+    from .X.create_post import XPoster
 
 # Robust path detection for Vercel
 _HERE = Path(__file__).resolve().parent

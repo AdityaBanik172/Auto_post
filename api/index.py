@@ -2,22 +2,15 @@ import os
 import sys
 from pathlib import Path
 
-# Add the 'backend' folder to the Python path
-# This allows imports like 'from linkedin.create_post import LinkedIn' to work
+# Add the project root to sys.path so 'backend.app' can be found
 _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parent
-_BACKEND = _ROOT / "backend"
 
-if str(_BACKEND) not in sys.path:
-    sys.path.append(str(_BACKEND))
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-# Import the 'app' object from 'backend/app.py'
-try:
-    from app import app as app_instance
-    # Vercel looks for a variable named 'app' or 'application'
-    app = app_instance
-except ImportError as e:
-    print(f"Error importing app: {e}")
-    # Fallback to try relative import if needed
-    from backend.app import app as app_instance
-    app = app_instance
+# Direct import for Vercel's scanner
+from backend.app import app
+
+# Ensure 'app' is definitely at the top level
+application = app
