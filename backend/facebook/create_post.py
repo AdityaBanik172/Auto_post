@@ -1,68 +1,93 @@
+import hashlib
 import os
-import requests
-import json
 import datetime
+import json
+
+import requests
 from dotenv import load_dotenv
+
+try:
+    from linkedin.token_refresh import TokenManager
+except ImportError:
+    from ..linkedin.token_refresh import TokenManager
 
 load_dotenv()
 
-_VERBOSE = os.getenv("BUFFER_VERBOSE", "False").lower() == "true"
+_REQUEST_TIMEOUT = 45
+_VERBOSE = os.getenv("VERBOSE_BUFFER_LOGS", "").lower() in ("1", "true", "yes")
+
+_channel_cache: dict[str, tuple[str, str]] = {}
+
+
+def _channel_cache_key(token: str) -> str:
+    return hashlib.sha256(("facebook" + token).encode()).hexdigest()
+
 
 class FacebookPoster:
     def __init__(self, content, image_urls=None):
         self.content = content
         self.image_urls = image_urls
-        self.token = os.getenv("LINKEDIN_FB_BUFFER_ACCESS_TOKEN") or os.getenv("LINKEDIN_BUFFER_ACCESS_TOKEN")
+        
+        # Buffer token from .env — Shared with LinkedIn (LINKEDIN_FB_BUFFER_ACCESS_TOKEN)
+        token_manager = TokenManager()
+        self.access_token = token_manager.get_valid_token()
+        
         self.graphql_url = os.getenv("GRAPHQL_URL", "https://api.buffer.com/graphql")
-        
-        if not self.token:
-            raise Exception("Facebook/LinkedIn Buffer Access Token not found in environment variables.")
-        
+        self._http = requests.Session()
+        self._http.headers.update(
+            {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json",
+            }
+        )
         self.channel_id = None
         self.channel_name = None
-        self._get_facebook_channel()
+
+        self.fetch_channel_id()
 
     def graphql_query(self, query, variables=None):
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-        }
         payload = {"query": query}
         if variables:
             payload["variables"] = variables
-            
-        response = requests.post(self.graphql_url, json=payload, headers=headers)
-        return response.status_code, response.json()
+        res = self._http.post(
+            self.graphql_url,
+            json=payload,
+            timeout=_REQUEST_TIMEOUT,
+        )
+        return res.status_code, res.json()
 
-    def _get_facebook_channel(self):
+    def fetch_channel_id(self):
+        key = _channel_cache_key(self.access_token)
+        if key in _channel_cache:
+            self.channel_id, self.channel_name = _channel_cache[key]
+            if _VERBOSE:
+                print(f"[OK] FACEBOOK: channel {self.channel_name} [{self.channel_id}] (cached)")
+            return
+
         query = """
-        query {
-            user {
-                channels {
-                    id
-                    name
-                    service
-                }
-            }
-        }
+            query { account { organizations { channels { id name service } } } }
         """
         status, data = self.graphql_query(query)
         if status != 200:
             raise Exception(f"Failed to fetch Buffer channels: {status}")
             
-        channels = data.get("data", {}).get("user", {}).get("channels", [])
-        # Find Facebook channel (could be 'facebook' service)
-        fb_channel = next((c for c in channels if c["service"] == "facebook"), None)
+        orgs = data.get("data", {}).get("account", {}).get("organizations", [])
+        for org in orgs:
+            channels = org.get("channels", [])
+            for channel in channels:
+                # Buffer can identify Facebook as 'facebook' or potentially 'facebook_page'
+                if "facebook" in channel.get("service", "").lower():
+                    self.channel_id = channel["id"]
+                    self.channel_name = f"{channel['name']} ({channel['service']})"
+                    break
+            if self.channel_id:
+                break
         
-        if not fb_channel:
-            # Fallback check for 'facebook_page' or similar if necessary
-            fb_channel = next((c for c in channels if "facebook" in c["service"].lower()), None)
-
-        if fb_channel:
-            self.channel_id = fb_channel["id"]
-            self.channel_name = fb_channel["name"]
-            if _VERBOSE:
-                print(f"[OK] Facebook: channel {self.channel_name} [{self.channel_id}]")
+        if not self.channel_id:
+            raise Exception("No Facebook channel found for the provided token.")
+        _channel_cache[key] = (self.channel_id, self.channel_name)
+        if _VERBOSE:
+            print(f"[OK] FACEBOOK: channel {self.channel_name} [{self.channel_id}]")
 
     def create_post(self):
         mutation = """
