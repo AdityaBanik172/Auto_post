@@ -5,7 +5,7 @@ import json
 
 import requests
 from dotenv import load_dotenv
-from linkedin.token_refresh import TokenManager
+from .token_refresh import TokenManager
 
 load_dotenv()
 
