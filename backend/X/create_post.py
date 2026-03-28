@@ -91,8 +91,7 @@ class XPoster:
                 ... on PostActionSuccess {
                     post {
                         id
-                        serviceLink
-                        permalink
+                        externalLink
                     }
                 }
                 ... on UnexpectedError {
@@ -137,7 +136,7 @@ class XPoster:
             raise Exception(f"Buffer API Error: {error_msg}")
 
         post_data = post_result.get("post", {})
-        return post_data.get("permalink") or post_data.get("serviceLink")
+        return post_data.get("externalLink")
 
 if __name__ == "__main__":
     post_content = f"Hello! This is a test post from my custom Buffer API script! Time: {datetime.datetime.now()}"
