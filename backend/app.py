@@ -13,12 +13,22 @@ from linkedin.create_post import LinkedIn
 from linkedin.imgbb_client import upload_image_to_imgbb
 from X.create_post import XPoster
 
-# Load repo-root .env (works when cwd is backend/ or project root)
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(_REPO_ROOT / ".env")
+# Robust path detection for Vercel
+_HERE = Path(__file__).resolve().parent
+_REPO_ROOT = _HERE.parent
 
+# Try to find the frontend directory in common locations
 FRONTEND_DIR = _REPO_ROOT / "frontend"
+if not FRONTEND_DIR.exists():
+    # If running from root, frontend might be relative to cwd
+    FRONTEND_DIR = Path.cwd() / "frontend"
 
+# Load .env but don't crash if it's missing (Vercel uses system secrets)
+env_path = _REPO_ROOT / ".env"
+if env_path.exists():
+    load_dotenv(env_path)
+else:
+    load_dotenv() # Fallback to standard search
 
 def _backend_api_base_from_env() -> str:
     """BACKEND_API_BASE_URL (or legacy PUBLIC_API_BASE_URL): full API root including /api."""
