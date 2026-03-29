@@ -154,69 +154,32 @@ class InstagramPoster:
             raise Exception(f"Buffer API Error: {error_msg}")
 
         post_data = post_result.get("post", {})
-        post_id = post_data.get("id")
+        return {
+            "id": post_data.get("id"),
+            "link": post_data.get("externalLink")
+        }
 
-        if not post_id:
-            return post_data.get("externalLink") or "Post created (No ID)"
-
-        # Time-Aware Polling (Optimized for Vercel Free: 10s budget)
-        elapsed = time.time() - start_time
-        if elapsed > 7:
-            if _VERBOSE:
-                print(f"[SKIP] Skipping polling for Instagram link (Elapsed {elapsed:.1f}s)")
-            return post_data.get("externalLink") or "Success (Processing: Link will generate shortly)"
-
-        max_attempts = 2
-        delay = 1.0
-        for attempt in range(max_attempts):
-            elapsed = time.time() - start_time
-            if elapsed > 9.0:
-                break
-                
-            if _VERBOSE:
-                print(f"[POLL] Instagram post {post_id} - Attempt {attempt+1}/{max_attempts} (Elapsed {elapsed:.1f}s)")
+    def get_post_status(self, post_id: str):
+        query = """
+        query GetPostStatus($id: ID!) {
+          node(id: $id) {
+            ... on Post {
+              id
+              status
+              externalLink
+            }
+          }
+        }
+        """
+        status_code, data = self.graphql_query(query, {"id": post_id})
+        if status_code != 200:
+            raise Exception(f"Failed to fetch post status: {status_code}")
             
-            try:
-                status_query = """
-                query GetPostStatus($id: ID!) {
-                  node(id: $id) {
-                    ... on Post {
-                      id
-                      status
-                      externalLink
-                    }
-                  }
-                }
-                """
-                payload = {"query": status_query, "variables": {"id": post_id}}
-                res = self._http.post(self.graphql_url, json=payload, timeout=2.0)
-                if res.status_code == 200:
-                    s_data = res.json()
-                    post_info = s_data.get("data", {}).get("node", {})
-                    status = post_info.get("status", "").lower()
-                    link = post_info.get("externalLink")
-                    
-                    if status in ["sent", "delivered", "shared", "success"] and link:
-                        if _VERBOSE:
-                            print(f"[OK] Instagram post {post_id} is {status}. Link: {link}")
-                        return link
-                    elif status in ["failed", "error"]:
-                        raise Exception(f"Instagram: Post status reported as '{status}'")
-                
-            except Exception as e:
-                if _VERBOSE:
-                    print(f"[WARN] Error during Instagram polling: {e}")
-            
-            time.sleep(delay)
-
-        # Final attempt to get the link
-        link = post_data.get("externalLink")
-        if not link:
-            return (
-                "Created (Check Buffer app for mobile notification - "
-                "direct posting may be restricted for this account type)"
-            )
-        return link
+        post_info = data.get("data", {}).get("node", {})
+        return {
+            "status": post_info.get("status", "").lower(),
+            "link": post_info.get("externalLink")
+        }
 
 if __name__ == "__main__":
     post_content = f"Hello! This is a test post from my custom Buffer API script! Time: {datetime.datetime.now()}"

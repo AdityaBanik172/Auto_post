@@ -113,6 +113,33 @@ def get_status():
     return jsonify({"status": "Backend is running!"})
 
 
+@app.route('/api/post/status', methods=['GET'])
+def get_post_status():
+    platform = request.args.get('platform', '').lower()
+    post_id = request.args.get('id', '')
+    
+    if not platform or not post_id:
+        return jsonify({"success": False, "message": "platform and id are required"}), 400
+        
+    try:
+        poster = None
+        if platform == 'linkedin':
+            poster = LinkedIn("status_check")
+        elif platform == 'facebook':
+            poster = FacebookPoster("status_check")
+        elif platform == 'instagram':
+            poster = InstagramPoster("status_check", image_urls=["placeholder"])
+        elif platform == 'x':
+            poster = XPoster("status_check")
+        else:
+            return jsonify({"success": False, "message": f"Unknown platform: {platform}"}), 400
+            
+        result = poster.get_post_status(post_id)
+        return jsonify({"success": True, "status": result['status'], "link": result['link']})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
 @app.route("/api/config", methods=["GET"])
 def api_config():
     """Returns the same API base the dashboard uses (from BACKEND_API_BASE_URL or this request)."""
@@ -196,8 +223,8 @@ def create_post():
             poster = LinkedIn(data['content'], image_urls=data['image_urls'])
             if not poster.channel_id:
                 return (0, "LinkedIn: Failed (No valid channel)", False, None)
-            link = poster.create_post()
-            return (0, f"LinkedIn: Success ({poster.channel_name})", True, link)
+            res = poster.create_post()
+            return (0, f"LinkedIn: Success ({poster.channel_name})", True, res)
         except Exception as e:
             return (0, f"LinkedIn: Error ({str(e)})", False, None)
 
@@ -208,8 +235,8 @@ def create_post():
             poster = XPoster(data['content'], image_urls=data['image_urls'])
             if not poster.channel_id:
                 return (1, "X: Failed (No valid channel)", False, None)
-            link = poster.create_post()
-            return (1, f"X: Success ({poster.channel_name})", True, link)
+            res = poster.create_post()
+            return (1, f"X: Success ({poster.channel_name})", True, res)
         except Exception as e:
             return (1, f"X: Error ({str(e)})", False, None)
 
@@ -220,8 +247,8 @@ def create_post():
             poster = InstagramPoster(data['content'], image_urls=data['image_urls'])
             if not poster.channel_id:
                 return (2, "Instagram: Failed (No valid channel)", False, None)
-            link = poster.create_post()
-            return (2, f"Instagram: Success ({poster.channel_name})", True, link)
+            res = poster.create_post()
+            return (2, f"Instagram: Success ({poster.channel_name})", True, res)
         except Exception as e:
             return (2, f"Instagram: Error ({str(e)})", False, None)
 
@@ -232,8 +259,8 @@ def create_post():
             poster = FacebookPoster(data['content'], image_urls=data['image_urls'])
             if not poster.channel_id:
                 return (3, "Facebook: Failed (No valid channel)", False, None)
-            link = poster.create_post()
-            return (3, f"Facebook: Success ({poster.channel_name})", True, link)
+            res = poster.create_post()
+            return (3, f"Facebook: Success ({poster.channel_name})", True, res)
         except Exception as e:
             return (3, f"Facebook: Error ({str(e)})", False, None)
 
@@ -249,6 +276,7 @@ def create_post():
             jobs.append(_facebook_job)
 
         links = {}
+        post_ids = {}
         if jobs:
             max_workers = min(len(jobs), 4)
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -256,17 +284,26 @@ def create_post():
                 batch = [f.result() for f in futs]
             
             batch.sort(key=lambda x: x[0])
-            for prio, msg, ok, link in batch:
+            for prio, msg, ok, res in batch:
                 results.append(msg)
                 if ok:
                     success_count += 1
-                    if link:
-                        platform_map = {0: "linkedin", 1: "x", 2: "instagram", 3: "facebook"}
-                        platform_name = platform_map.get(prio, "unknown")
-                        links[platform_name] = link
+                    platform_map = {0: "linkedin", 1: "x", 2: "instagram", 3: "facebook"}
+                    platform_name = platform_map.get(prio, "unknown")
+                    
+                    if isinstance(res, dict):
+                        if res.get("link"):
+                            links[platform_name] = res["link"]
+                        if res.get("id"):
+                            post_ids[platform_name] = res["id"]
 
         if success_count > 0:
-            return jsonify({"success": True, "message": " | ".join(results), "links": links})
+            return jsonify({
+                "success": True, 
+                "message": " | ".join(results), 
+                "links": links,
+                "post_ids": post_ids
+            })
         else:
             return jsonify({"success": False, "message": "Failed to post: " + " | ".join(results)}), 400
 
