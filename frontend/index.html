@@ -333,7 +333,20 @@
                     body: formData
                 });
                 
-                const data = await response.json();
+                let data;
+                const contentType = response.headers.get("content-type");
+                if (contentType && contentType.indexOf("application/json") !== -1) {
+                    data = await response.json();
+                } else {
+                    const text = await response.text();
+                    if (response.status === 504) {
+                        // Special handling for Vercel 10s timeout
+                        showAlert("Post likely successful, but the platform link is still generating. Check your social media accounts in a moment!", true);
+                        return;
+                    }
+                    throw new Error(`Server returned ${response.status}: ${text.substring(0, 100)}`);
+                }
+                
                 showAlert(data.message, data.success, data.links);
                 
                 if (data.success) {
@@ -342,7 +355,12 @@
                     renderInputs();
                 }
             } catch (err) {
-                showAlert(`Error: ${err.message}`, false);
+                // If it's a timeout error from fetch itself (not 504)
+                if (err.message.includes('fetch') || err.message.includes('timeout')) {
+                    showAlert("Request took too long, but your post was likely sent. Verify on your accounts!", true);
+                } else {
+                    showAlert(`Error: ${err.message}`, false);
+                }
             } finally {
                 submitBtn.disabled = false;
                 submitText.textContent = 'Publish Post';
