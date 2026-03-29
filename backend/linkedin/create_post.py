@@ -4,12 +4,13 @@ import datetime
 import json
 
 import requests
+import time
 from dotenv import load_dotenv
 from .token_refresh import TokenManager
 
 load_dotenv()
 
-_REQUEST_TIMEOUT = 45
+_REQUEST_TIMEOUT = 9
 _VERBOSE = os.getenv("VERBOSE_BUFFER_LOGS", "").lower() in ("1", "true", "yes")
 
 # Avoid re-fetching channel list on every post (same process)
@@ -136,6 +137,51 @@ class LinkedIn:
             raise Exception(f"Buffer API Error: {error_msg}")
 
         post_data = post_result.get("post", {})
+        post_id = post_data.get("id")
+
+        if not post_id:
+            return post_data.get("externalLink")
+
+        # Polling for success status and valid externalLink (Optimized for Vercel Free: 10s limit)
+        max_attempts = 3
+        delay = 2.5
+        for attempt in range(max_attempts):
+            if _VERBOSE:
+                print(f"[POLL] LinkedIn post {post_id} - Attempt {attempt+1}/{max_attempts}")
+            
+            try:
+                status_query = """
+                query GetPostStatus($id: ID!) {
+                  node(id: $id) {
+                    ... on Post {
+                      id
+                      status
+                      externalLink
+                    }
+                  }
+                }
+                """
+                s_status, s_data = self.graphql_query(status_query, {"id": post_id})
+                if s_status == 200:
+                    post_info = s_data.get("data", {}).get("node", {})
+                    status = post_info.get("status", "").lower()
+                    link = post_info.get("externalLink")
+                    
+                    if status in ["sent", "delivered", "shared", "success"] and link:
+                        if _VERBOSE:
+                            print(f"[OK] LinkedIn post {post_id} is {status}. Link: {link}")
+                        return link
+                    elif status in ["failed", "error"]:
+                        raise Exception(f"LinkedIn: Post status reported as '{status}'")
+                
+            except Exception as e:
+                # In polling, we can catch and log errors, but keep trying
+                if _VERBOSE:
+                    print(f"[WARN] Error during LinkedIn polling: {e}")
+            
+            time.sleep(delay)
+
+        # Final attempt to get the link even if status isn't 'sent'
         return post_data.get("externalLink")
 
 if __name__ == "__main__":
