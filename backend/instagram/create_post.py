@@ -4,13 +4,12 @@ import datetime
 import json
 
 import requests
-import time
 from dotenv import load_dotenv
 from .token_refresh import TokenManager
 
 load_dotenv()
 
-_REQUEST_TIMEOUT = 8
+_REQUEST_TIMEOUT = 45
 _VERBOSE = os.getenv("VERBOSE_BUFFER_LOGS", "").lower() in ("1", "true", "yes")
 
 _channel_cache: dict[str, tuple[str, str]] = {}
@@ -73,7 +72,7 @@ class InstagramPoster:
                 # Buffer identifies Instagram as 'instagram'
                 if channel.get("service") == "instagram":
                     self.channel_id = channel["id"]
-                    self.channel_name = channel["name"]
+                    self.channel_name = f"{channel['name']} ({channel['service']})"
                     break
             if self.channel_id:
                 break
@@ -111,10 +110,6 @@ class InstagramPoster:
         }
         """
 
-        # Determine if it's a single post or carousel
-        num_images = len(self.image_urls) if self.image_urls else 0
-        is_carousel = num_images > 1
-        
         variables = {
             "input": {
                 "channelId": self.channel_id,
@@ -123,7 +118,7 @@ class InstagramPoster:
                 "schedulingType": "automatic",
                 "metadata": {
                     "instagram": {
-                        "type": "carousel" if is_carousel else "post",
+                        "type": "post",
                         "shouldShareToFeed": True
                     }
                 }
@@ -137,65 +132,31 @@ class InstagramPoster:
                 ]
             }
 
-        start_time = time.time()
-        status_post, data_post = None, {}
-        try:
-            status_post, data_post = self.graphql_query(mutation, variables)
-        except requests.Timeout:
-            return "Success (Processing: Mutation timed out, but post likely created)"
+        status_post, data_post = self.graphql_query(mutation, variables)
 
         if _VERBOSE:
             print(f"Instagram createPost HTTP {status_post}")
             print(json.dumps(data_post, indent=2, ensure_ascii=True))
 
         if "errors" in data_post:
-            msgs = [e.get("message", "Unknown GraphQL error") for e in data_post["errors"]]
-            # Include specific reason if present
-            for e in data_post["errors"]:
-                if "extensions" in e and "error" in e["extensions"]:
-                    msgs.append(f"Reason: {e['extensions']['error']}")
-            raise Exception(" | ".join(msgs))
+            error_msgs = [e.get("message", "Unknown error") for e in data_post["errors"]]
+            raise Exception("GraphQL Error: " + ", ".join(error_msgs))
 
         post_result = data_post.get("data", {}).get("createPost", {})
-        typename = post_result.get("__typename")
-        
-        if typename == "PostActionSuccess":
-            post_data = post_result.get("post", {})
-            return {
-                "id": post_data.get("id"),
-                "link": post_data.get("externalLink"),
-                "handle": self.channel_name
-            }
-        else:
-            # Handle various error typenames (InvalidInputError, UnexpectedError, etc.)
-            error_msg = post_result.get("message") or "Unknown Buffer API error"
-            error_code = post_result.get("code") or "N/A"
-            raise Exception(f"Buffer API Error ({typename}): {error_msg} (Code: {error_code})")
+        if post_result.get("__typename") != "PostActionSuccess":
+            error_msg = post_result.get("message", "Unknown error creating post")
+            raise Exception(f"Buffer API Error: {error_msg}")
 
-    def get_post_status(self, post_id: str):
-        query = """
-        query GetPostStatus($id: ID!) {
-          node(id: $id) {
-            ... on Post {
-              id
-              status
-              externalLink
-            }
-          }
-        }
-        """
-        status_code, data = self.graphql_query(query, {"id": post_id})
-        if status_code != 200:
-            raise Exception(f"Failed to fetch post status: {status_code}")
-            
-        post_info = data.get("data", {}).get("node")
-        if not post_info:
-            return {"status": "pending", "link": None}
-            
-        return {
-            "status": post_info.get("status", "").lower(),
-            "link": post_info.get("externalLink")
-        }
+        post_data = post_result.get("post", {})
+        link = post_data.get("externalLink")
+        
+        if not link:
+            # If link is null, it usually means Buffer moved it to 'Notifications' or 'Drafts'.
+            return (
+                "Created (Check Buffer app for mobile notification - "
+                "direct posting may be restricted for this account type)"
+            )
+        return link
 
 if __name__ == "__main__":
     post_content = f"Hello! This is a test post from my custom Buffer API script! Time: {datetime.datetime.now()}"

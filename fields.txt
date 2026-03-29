@@ -1,0 +1,4 @@
+Introspecting 'PostPublishingError' type fields...
+- message
+- supportUrl
+- rawError
