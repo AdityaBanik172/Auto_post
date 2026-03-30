@@ -166,10 +166,32 @@ class InstagramPoster:
 
         post_data = post_result.get("post", {})
         link = post_data.get("externalLink")
+        post_id = post_data.get("id")
+        
+        # Poll for link if it's missing (usually generated a few seconds later for media posts)
+        if not link and post_id:
+            import time
+            for _ in range(3):
+                try:
+                    time.sleep(2)
+                    rest_res = requests.get(
+                        f"https://api.bufferapp.com/1/updates/{post_id}.json", 
+                        headers={"Authorization": f"Bearer {self.access_token}"},
+                        timeout=5
+                    )
+                    p = rest_res.json()
+                    service_link = p.get('service_link')
+                    if service_link:
+                        link = service_link
+                        break
+                except Exception:
+                    pass
         
         if not link:
-            # If link is null, return a valid URL to the Buffer queue so it works in the UI
-            return f"https://publish.buffer.com/profile/{self.channel_id}/tab/queue"
+            # If link is null (usually due to mobile push or instant processing delay),
+            # return the Instagram profile link so the user is directed to the right platform.
+            username = self.channel_name.split(' ')[0] if self.channel_name else ""
+            return f"https://www.instagram.com/{username}"
             
         return link
 

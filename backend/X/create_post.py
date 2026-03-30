@@ -136,7 +136,32 @@ class XPoster:
             raise Exception(f"Buffer API Error: {error_msg}")
 
         post_data = post_result.get("post", {})
-        return post_data.get("externalLink")
+        link = post_data.get("externalLink")
+        post_id = post_data.get("id")
+        
+        # Poll for link if it's missing (usually generated a few seconds later for media posts)
+        if not link and post_id:
+            import time
+            for _ in range(3):
+                try:
+                    time.sleep(2)
+                    rest_res = requests.get(
+                        f"https://api.bufferapp.com/1/updates/{post_id}.json", 
+                        headers={"Authorization": f"Bearer {self.access_token}"},
+                        timeout=5
+                    )
+                    p = rest_res.json()
+                    service_link = p.get('service_link')
+                    if service_link:
+                        link = service_link
+                        break
+                except Exception:
+                    pass
+
+        if not link:
+            username = self.channel_name.split(' ')[0] if self.channel_name else ""
+            return f"https://x.com/{username}"
+        return link
 
 if __name__ == "__main__":
     post_content = f"Hello! This is a test post from my custom Buffer API script! Time: {datetime.datetime.now()}"
