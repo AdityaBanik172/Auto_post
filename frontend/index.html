@@ -165,7 +165,7 @@
                     statusSpan.innerHTML = `<a href="${res.link}" target="_blank" class="hover:underline flex items-center font-bold">View Post <svg class="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg></a>`;
                 } else {
                     statusSpan.innerHTML = `<span class="flex items-center text-slate-500 italic"><span class="loader-sm mr-2"></span> Processing...</span>`;
-                    pollForLink(pKey, res.post_id, group, res.fallback);
+                    pollForLink(pKey, res.post_id, statusSpan, res.fallback);
                 }
                 
                 group.appendChild(statusSpan);
@@ -179,13 +179,15 @@
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    async function pollForLink(platform, postId, element, fallback) {
-        const statusSpan = element.querySelector('.flex-1');
+    async function pollForLink(platform, postId, statusSpan, fallback) {
         const API_BASE_URL = await resolveApiBaseUrl();
         let attempts = 0;
         const maxAttempts = 30; // 60 seconds
         
         const check = async () => {
+            // Stop if the element is no longer in the document (e.g. alert was cleared)
+            if (!document.body.contains(statusSpan)) return;
+
             attempts++;
             try {
                 const res = await fetch(`${API_BASE_URL}/check-link?platform=${platform}&post_id=${postId}`);
