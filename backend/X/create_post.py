@@ -142,7 +142,7 @@ class XPoster:
         # Poll for link if it's missing (usually generated a few seconds later for media posts)
         if not link and post_id:
             import time
-            for _ in range(3):
+            for _ in range(2):
                 try:
                     time.sleep(2)
                     rest_res = requests.get(
