@@ -139,41 +139,15 @@ class LinkedIn:
         link = post_data.get("externalLink")
         post_id = post_data.get("id")
         
-        # Poll for link if it's missing (generated a few seconds later for media posts)
-        if not link and post_id:
-            import time
-            # Maximize Vercel wait (~7.5s total) while using 1.5s intervals for efficiency
-            for _ in range(5):
-                try:
-                    time.sleep(1.5)
-                    rest_res = requests.get(
-                        f"https://api.bufferapp.com/1/updates/{post_id}.json", 
-                        headers={"Authorization": f"Bearer {self.access_token}"},
-                        timeout=5
-                    )
-                    p = rest_res.json()
-                    # 1. Prefer the direct service_link if available
-                    service_link = p.get('service_link')
-                    if service_link:
-                        link = service_link
-                        break
-                    
-                    # 2. PROACTIVE FIX: If service_link is missing but service_update_id exists, 
-                    # we can construct the link ourselves! (Works for LinkedIn Buffer posts)
-                    uid = p.get('service_update_id')
-                    if uid and "urn:li:" in uid:
-                        link = f"https://www.linkedin.com/feed/update/{uid}"
-                        break
-                except Exception:
-                    pass
-
+        # We no longer poll here to avoid Vercel 10s timeouts.
+        # The frontend will now call a dedicated check-link endpoint.
         if not link:
-            # Safer fallback for Company Pages (Fixfield)
+            # Prepare a fallback in case polling never succeeds
             username = self.channel_name.split(' ')[0] if self.channel_name else ""
-            if "linkedin" in username.lower(): # Guard against weird names
-                return "https://www.linkedin.com/feed/"
-            return f"https://www.linkedin.com/company/{username}"
-        return link
+            fallback = f"https://www.linkedin.com/company/{username}" if "Fixfield" in self.channel_name else "https://www.linkedin.com/feed/"
+            return {"link": None, "post_id": post_id, "fallback": fallback}
+            
+        return {"link": link, "post_id": post_id, "fallback": None}
 
 if __name__ == "__main__":
     post_content = f"Hello! This is a test post from my custom Buffer API script! Time: {datetime.datetime.now()}"

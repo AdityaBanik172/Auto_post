@@ -139,30 +139,14 @@ class XPoster:
         link = post_data.get("externalLink")
         post_id = post_data.get("id")
         
-        # Poll for link if it's missing (generated a few seconds later for media posts)
-        if not link and post_id:
-            import time
-            # Maximize Vercel wait (~7.5s total) while using 1.5s intervals for efficiency
-            for _ in range(5):
-                try:
-                    time.sleep(1.5)
-                    rest_res = requests.get(
-                        f"https://api.bufferapp.com/1/updates/{post_id}.json", 
-                        headers={"Authorization": f"Bearer {self.access_token}"},
-                        timeout=5
-                    )
-                    p = rest_res.json()
-                    service_link = p.get('service_link')
-                    if service_link:
-                        link = service_link
-                        break
-                except Exception:
-                    pass
-
+        # We no longer poll here to avoid Vercel 10s timeouts.
+        # The frontend will now call a dedicated check-link endpoint.
         if not link:
+            # Prepare a fallback in case polling never succeeds
             username = self.channel_name.split(' ')[0] if self.channel_name else ""
-            return f"https://x.com/{username}"
-        return link
+            return {"link": None, "post_id": post_id, "fallback": f"https://x.com/{username}"}
+            
+        return {"link": link, "post_id": post_id, "fallback": None}
 
 if __name__ == "__main__":
     post_content = f"Hello! This is a test post from my custom Buffer API script! Time: {datetime.datetime.now()}"

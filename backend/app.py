@@ -196,8 +196,8 @@ def create_post():
             poster = LinkedIn(data['content'], image_urls=data['image_urls'])
             if not poster.channel_id:
                 return (0, "LinkedIn: Failed (No valid channel)", False, None)
-            link = poster.create_post()
-            return (0, f"LinkedIn: Success ({poster.channel_name})", True, link)
+            res = poster.create_post()
+            return (0, f"LinkedIn: Success ({poster.channel_name})", True, res)
         except Exception as e:
             return (0, f"LinkedIn: Error ({str(e)})", False, None)
 
@@ -208,8 +208,8 @@ def create_post():
             poster = XPoster(data['content'], image_urls=data['image_urls'])
             if not poster.channel_id:
                 return (1, "X: Failed (No valid channel)", False, None)
-            link = poster.create_post()
-            return (1, f"X: Success ({poster.channel_name})", True, link)
+            res = poster.create_post()
+            return (1, f"X: Success ({poster.channel_name})", True, res)
         except Exception as e:
             return (1, f"X: Error ({str(e)})", False, None)
 
@@ -220,8 +220,8 @@ def create_post():
             poster = InstagramPoster(data['content'], image_urls=data['image_urls'])
             if not poster.channel_id:
                 return (2, "Instagram: Failed (No valid channel)", False, None)
-            link = poster.create_post()
-            return (2, f"Instagram: Success ({poster.channel_name})", True, link)
+            res = poster.create_post()
+            return (2, f"Instagram: Success ({poster.channel_name})", True, res)
         except Exception as e:
             return (2, f"Instagram: Error ({str(e)})", False, None)
 
@@ -232,8 +232,8 @@ def create_post():
             poster = FacebookPoster(data['content'], image_urls=data['image_urls'])
             if not poster.channel_id:
                 return (3, "Facebook: Failed (No valid channel)", False, None)
-            link = poster.create_post()
-            return (3, f"Facebook: Success ({poster.channel_name})", True, link)
+            res = poster.create_post()
+            return (3, f"Facebook: Success ({poster.channel_name})", True, res)
         except Exception as e:
             return (3, f"Facebook: Error ({str(e)})", False, None)
 
@@ -248,7 +248,7 @@ def create_post():
         if "facebook" in platforms:
             jobs.append(_facebook_job)
 
-        links = {}
+        results_dict = {}
         if jobs:
             max_workers = min(len(jobs), 4)
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -256,22 +256,57 @@ def create_post():
                 batch = [f.result() for f in futs]
             
             batch.sort(key=lambda x: x[0])
-            for prio, msg, ok, link in batch:
+            for prio, msg, ok, res in batch:
                 results.append(msg)
                 if ok:
                     success_count += 1
-                    if link:
+                    if res:
                         platform_map = {0: "linkedin", 1: "x", 2: "instagram", 3: "facebook"}
                         platform_name = platform_map.get(prio, "unknown")
-                        links[platform_name] = link
+                        results_dict[platform_name] = res
 
         if success_count > 0:
-            return jsonify({"success": True, "message": " | ".join(results), "links": links})
+            return jsonify({"success": True, "message": " | ".join(results), "platforms": results_dict})
         else:
             return jsonify({"success": False, "message": "Failed to post: " + " | ".join(results)}), 400
 
     except Exception as e:
         return jsonify({"success": False, "message": f"Critical error: {str(e)}"}), 500
+
+@app.route("/api/check-link", methods=["GET"])
+def check_link():
+    import requests
+    platform = request.args.get("platform")
+    post_id = request.args.get("post_id")
+    
+    if not platform or not post_id:
+        return jsonify({"success": False, "error": "Missing platform or post_id"}), 400
+    
+    # We use the LinkedIn token for checking any Buffer post status 
+    # (assuming they share the same org/app permissions for status checks)
+    token = os.getenv("LINKEDIN_FB_BUFFER_ACCESS_TOKEN")
+    if platform in ["x", "instagram"]:
+        token = os.getenv("X_INSTA_BUFFER_ACCESS_TOKEN")
+        
+    try:
+        url = f"https://api.bufferapp.com/1/updates/{post_id}.json"
+        res = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=5)
+        data = res.json()
+        
+        service_link = data.get("service_link")
+        update_id = data.get("service_update_id")
+        
+        # Proactive logic for LinkedIn if service_link is null but ID exists
+        if not service_link and platform == "linkedin" and update_id and "urn:li:" in update_id:
+            service_link = f"https://www.linkedin.com/feed/update/{update_id}"
+            
+        return jsonify({
+            "success": True, 
+            "link": service_link,
+            "status": data.get("status")
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # This is required for Vercel Serverless Functions
 app_callable = app
