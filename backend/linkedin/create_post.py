@@ -2,6 +2,7 @@ import hashlib
 import os
 import datetime
 import json
+import time
 
 import requests
 from dotenv import load_dotenv
@@ -24,11 +25,11 @@ class LinkedIn:
     def __init__(self, content, assets=None):
         self.content = content
         self.assets = assets or []
-        
+
         # Buffer token from .env — LinkedIn-specific (LINKEDIN_BUFFER_ACCESS_TOKEN)
         token_manager = TokenManager()
         self.access_token = token_manager.get_valid_token()
-        
+
         self.graphql_url = os.getenv("GRAPHQL_URL", "https://api.buffer.com/graphql")
         self._http = requests.Session()
         self._http.headers.update(
@@ -42,6 +43,10 @@ class LinkedIn:
 
         self.fetch_channel_id()
 
+    # ------------------------------------------------------------------
+    # Core GraphQL helper
+    # ------------------------------------------------------------------
+
     def graphql_query(self, query, variables=None):
         payload = {"query": query}
         if variables:
@@ -52,6 +57,10 @@ class LinkedIn:
             timeout=_REQUEST_TIMEOUT,
         )
         return res.status_code, res.json()
+
+    # ------------------------------------------------------------------
+    # Channel resolution
+    # ------------------------------------------------------------------
 
     def fetch_channel_id(self):
         key = _channel_cache_key(self.access_token)
@@ -65,7 +74,7 @@ class LinkedIn:
             query { account { organizations { channels { id name service } } } }
         """
         status, data = self.graphql_query(query)
-        
+
         orgs = data.get("data", {}).get("account", {}).get("organizations", [])
         for org in orgs:
             channels = org.get("channels", [])
@@ -76,12 +85,27 @@ class LinkedIn:
                     break
             if self.channel_id:
                 break
-        
+
         if not self.channel_id:
             raise Exception("No LinkedIn channel found for the provided LinkedIn token.")
+
         _channel_cache[key] = (self.channel_id, self.channel_name)
         if _VERBOSE:
             print(f"[OK] LINKEDIN: channel {self.channel_name} [{self.channel_id}]")
+
+    # ------------------------------------------------------------------
+    # Fallback URL helper
+    # ------------------------------------------------------------------
+
+    def _fallback_url(self) -> str:
+        username = self.channel_name.split(" ")[0] if self.channel_name else ""
+        if self.channel_name and "Fixfield" in self.channel_name:
+            return f"https://www.linkedin.com/company/{username}"
+        return "https://www.linkedin.com/feed/"
+
+    # ------------------------------------------------------------------
+    # Create post — returns immediately with post_id; link may be None
+    # ------------------------------------------------------------------
 
     def create_post(self):
         mutation = """
@@ -109,36 +133,35 @@ class LinkedIn:
                 "channelId": self.channel_id,
                 "text": self.content,
                 "mode": "shareNow",
-                "schedulingType": "automatic"
+                "schedulingType": "automatic",
             }
         }
-        
+
         if self.assets:
             variables["input"]["assets"] = {}
-            
-            # Group assets by type
+
             images = [a["url"] for a in self.assets if a["type"] == "image"]
             videos = [a for a in self.assets if a["type"] == "video"]
             docs = [a for a in self.assets if a["type"] == "document"]
-            
+
             if images:
                 variables["input"]["assets"]["images"] = [{"url": url} for url in images]
-            
+
             if videos:
-                # Buffer LinkedIn video format
                 variables["input"]["assets"]["video"] = {
-                    "url": videos[0]["url"], 
+                    "url": videos[0]["url"],
                     "title": "Video Post",
-                    "thumbnailUrl": videos[0]["thumbnail"]
+                    "thumbnailUrl": videos[0]["thumbnail"],
                 }
-                
+
             if docs:
-                # Buffer LinkedIn document format (PDF)
-                variables["input"]["assets"]["documents"] = [{
-                    "url": docs[0]["url"],
-                    "title": docs[0].get("title", "Document"),
-                    "thumbnailUrl": docs[0]["thumbnail"]
-                }]
+                variables["input"]["assets"]["documents"] = [
+                    {
+                        "url": docs[0]["url"],
+                        "title": docs[0].get("title", "Document"),
+                        "thumbnailUrl": docs[0]["thumbnail"],
+                    }
+                ]
 
         status_post, data_post = self.graphql_query(mutation, variables)
 
@@ -158,18 +181,112 @@ class LinkedIn:
         post_data = post_result.get("post", {})
         link = post_data.get("externalLink")
         post_id = post_data.get("id")
-        
-        # We no longer poll here to avoid Vercel 10s timeouts.
-        # The frontend will now call a dedicated check-link endpoint.
-        if not link:
-            # Prepare a fallback in case polling never succeeds
-            username = self.channel_name.split(' ')[0] if self.channel_name else ""
-            fallback = f"https://www.linkedin.com/company/{username}" if "Fixfield" in self.channel_name else "https://www.linkedin.com/feed/"
-            return {"link": None, "post_id": post_id, "fallback": fallback}
-            
-        return {"link": link, "post_id": post_id, "fallback": None}
+        fallback = self._fallback_url()
 
+        if _VERBOSE:
+            print(f"[OK] Post created — id={post_id}, immediate link={link!r}")
+
+        # Return immediately; if link is None the caller should poll via get_post_link()
+        return {"link": link, "post_id": post_id, "fallback": fallback}
+
+    # ------------------------------------------------------------------
+    # Poll Buffer for the externalLink after posting
+    # Call this from a dedicated /check-link backend endpoint.
+    # ------------------------------------------------------------------
+
+    def get_post_link(
+        self,
+        post_id: str,
+        max_attempts: int = 8,
+        delay: float = 3.0,
+    ) -> dict:
+        """
+        Poll Buffer's GraphQL API until externalLink is populated or we give up.
+
+        Args:
+            post_id:      The Buffer post ID returned by create_post().
+            max_attempts: How many times to check before giving up (default 8).
+            delay:        Seconds to wait between attempts (default 3 s).
+
+        Returns:
+            {
+                "link":     str | None,   # Live LinkedIn URL or None on timeout
+                "post_id":  str,
+                "fallback": str,          # Profile / feed URL as a safe redirect
+            }
+        """
+        query = """
+            query GetPost($id: String!) {
+                post(id: $id) {
+                    id
+                    externalLink
+                    status
+                }
+            }
+        """
+
+        fallback = self._fallback_url()
+
+        for attempt in range(1, max_attempts + 1):
+            status_code, data = self.graphql_query(query, {"id": post_id})
+
+            if _VERBOSE:
+                print(f"[get_post_link] attempt {attempt}/{max_attempts} — HTTP {status_code}")
+                print(json.dumps(data, indent=2, ensure_ascii=True))
+
+            if "errors" in data:
+                error_msgs = [e.get("message", "Unknown") for e in data["errors"]]
+                raise Exception("GraphQL error fetching post: " + ", ".join(error_msgs))
+
+            post = data.get("data", {}).get("post", {})
+
+            # Buffer may return null for the post while it is still processing
+            if not post:
+                if _VERBOSE:
+                    print(f"[get_post_link] post not found yet, retrying...")
+                if attempt < max_attempts:
+                    time.sleep(delay)
+                continue
+
+            link = post.get("externalLink")
+            post_status = post.get("status", "")
+
+            if _VERBOSE:
+                print(f"[get_post_link] status={post_status!r}, link={link!r}")
+
+            if link:
+                return {"link": link, "post_id": post_id, "fallback": None}
+
+            # Terminal failure states — no point retrying
+            if post_status in ("failed", "error"):
+                raise Exception(f"Buffer post failed with status: {post_status!r}")
+
+            if attempt < max_attempts:
+                time.sleep(delay)
+
+        # Exhausted all attempts — return None so the frontend can use the fallback
+        if _VERBOSE:
+            print(f"[get_post_link] exhausted {max_attempts} attempts, returning fallback")
+
+        return {"link": None, "post_id": post_id, "fallback": fallback}
+
+
+# ---------------------------------------------------------------------------
+# Quick smoke-test
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    post_content = f"Hello! This is a test post from my custom Buffer API script! Time: {datetime.datetime.now()}"
-    # When object is created, it automatically sends the post to LinkedIn
-    linkedin = LinkedIn(post_content)
+    post_content = (
+        f"Hello! This is a test post from my custom Buffer API script! "
+        f"Time: {datetime.datetime.now()}"
+    )
+    li = LinkedIn(post_content)
+
+    result = li.create_post()
+    print("create_post result:", result)
+
+    if result["post_id"] and not result["link"]:
+        print("Link not available yet — polling...")
+        poll_result = li.get_post_link(result["post_id"])
+        print("get_post_link result:", poll_result)
+    else:
+        print("Immediate link:", result["link"])
