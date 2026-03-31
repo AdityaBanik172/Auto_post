@@ -300,10 +300,15 @@ def check_link():
         if not service_link and platform == "linkedin" and update_id and "urn:li:" in update_id:
             service_link = f"https://www.linkedin.com/feed/update/{update_id}"
             
+        error_msg = None
+        if data.get("status") in ["error", "failed"]:
+            error_msg = data.get("client_error") or data.get("error_message") or data.get("error") or "Failed to publish post via Buffer."
+
         return jsonify({
             "success": True, 
             "link": service_link,
-            "status": data.get("status")
+            "status": data.get("status"),
+            "error_message": error_msg
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

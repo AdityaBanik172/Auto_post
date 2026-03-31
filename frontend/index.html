@@ -278,6 +278,21 @@
                     return;
                 }
                 
+                if (data.status === 'error' || data.status === 'failed') {
+                    const errorMsg = data.error_message || "Post Failed";
+                    statusSpan.innerHTML = `
+                        <div class="flex items-center space-x-2">
+                            <span class="text-red-600 font-bold flex items-center cursor-help" title="${errorMsg}">
+                                <svg class="w-4 h-4 mr-1 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+                                <span class="truncate max-w-[120px]">${errorMsg}</span>
+                            </span>
+                            <span class="text-slate-300">|</span>
+                            <a href="${fallback}" target="_blank" class="hover:underline flex items-center font-bold text-red-600 text-sm">Post Manually &rarr;</a>
+                        </div>
+                    `;
+                    return;
+                }
+                
                 if (attempts >= maxAttempts) {
                     statusSpan.innerHTML = `<a href="${fallback}" target="_blank" class="hover:underline flex items-center text-amber-700 font-medium italic">Delayed (Check Profile)</a>`;
                     return;
