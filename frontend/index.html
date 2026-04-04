@@ -314,6 +314,7 @@
     async function pollForLink(platform, postId, statusSpan, fallback, resolvedLinks = null) {
         const API_BASE_URL = await resolveApiBaseUrl();
         const maxAttempts = 20; // 20 * 3s = 60s max wait
+        let consecutiveErrors = 0;
         
         for (let i = 0; i < maxAttempts; i++) {
             if (!document.body.contains(statusSpan)) return; // Stop if UI element removed
@@ -322,7 +323,33 @@
             
             try {
                 const res = await fetch(`${API_BASE_URL}/check-link?post_id=${postId}&platform=${platform}`);
+                
+                // Stop immediately on server errors — retrying won't help
+                if (res.status >= 500) {
+                    let errMsg = "Server error";
+                    try { const d = await res.json(); errMsg = d.error || errMsg; } catch {}
+                    console.error(`[${platform}] check-link 500:`, errMsg);
+                    statusSpan.innerHTML = `
+                        <div class="flex items-center space-x-2">
+                            <span class="text-red-600 font-bold flex items-center cursor-help" title="${errMsg}">
+                                <svg class="w-4 h-4 mr-1 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+                                <span class="truncate max-w-[120px]">Server Error</span>
+                            </span>
+                            <span class="text-slate-300">|</span>
+                            <a href="${fallback}" target="_blank" class="hover:underline flex items-center font-bold text-red-600 text-sm">Check Profile &rarr;</a>
+                        </div>
+                    `;
+                    return;
+                }
+
+                if (res.status === 404) {
+                    console.error(`[${platform}] check-link 404: post not found`);
+                    statusSpan.innerHTML = `<a href="${fallback}" target="_blank" class="hover:underline flex items-center text-amber-700 font-medium italic">Post not found (Check Profile)</a>`;
+                    return;
+                }
+
                 const data = await res.json();
+                consecutiveErrors = 0; // reset on successful response
 
                 if (data.ready) {
                     if (resolvedLinks) resolvedLinks[platform] = data.link;
@@ -345,7 +372,13 @@
                     return;
                 }
             } catch (err) {
+                consecutiveErrors++;
                 console.error("Polling error:", err);
+                // Stop after 3 consecutive network errors
+                if (consecutiveErrors >= 3) {
+                    statusSpan.innerHTML = `<a href="${fallback}" target="_blank" class="hover:underline flex items-center text-amber-700 font-medium italic">Network error (Check Profile)</a>`;
+                    return;
+                }
             }
         }
         
