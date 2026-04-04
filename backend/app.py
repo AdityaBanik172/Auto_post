@@ -296,14 +296,82 @@ def create_post():
 @app.route("/api/check-link", methods=["GET"])
 @app.route("/check-link", methods=["GET"])  # Alias for simplicity
 def check_link():
-    import requests
+    import requests as req_lib
     platform = request.args.get("platform")
     post_id = request.args.get("post_id")
     
     if not post_id:
         return jsonify({"success": False, "error": "Missing post_id"}), 400
-    
-    # Determine tokens to try
+
+    # ── LinkedIn: use the GraphQL-based lookup (REST API can't resolve GraphQL IDs) ──
+    if platform and platform.lower() == "linkedin":
+        try:
+            # Minimal init – we only need the token + HTTP session for get_post_link
+            token_mgr_mod = None
+            try:
+                from .linkedin.token_refresh import TokenManager as _TM
+                token_mgr_mod = _TM
+            except Exception:
+                try:
+                    from linkedin.token_refresh import TokenManager as _TM
+                    token_mgr_mod = _TM
+                except Exception:
+                    pass
+            
+            if token_mgr_mod is None:
+                return jsonify({"success": False, "error": "Cannot load LinkedIn token manager"}), 500
+
+            token_manager = token_mgr_mod()
+            access_token = token_manager.get_valid_token()
+
+            graphql_url = os.getenv("GRAPHQL_URL", "https://api.buffer.com/graphql")
+            http_session = req_lib.Session()
+            http_session.headers.update({
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            })
+
+            # Query the post via GraphQL
+            gql_query = """
+                query GetPost($id: String!) {
+                    post(id: $id) {
+                        id
+                        externalLink
+                        status
+                    }
+                }
+            """
+            gql_res = http_session.post(
+                graphql_url,
+                json={"query": gql_query, "variables": {"id": post_id}},
+                timeout=10,
+            )
+            gql_data = gql_res.json()
+
+            if "errors" in gql_data:
+                error_msgs = [e.get("message", "Unknown") for e in gql_data["errors"]]
+                return jsonify({"success": False, "error": "GraphQL: " + ", ".join(error_msgs)}), 500
+
+            post_obj    = gql_data.get("data", {}).get("post") or {}
+            link        = post_obj.get("externalLink")
+            post_status = post_obj.get("status", "unknown")
+
+            error_msg = None
+            if post_status in ("failed", "error"):
+                error_msg = f"Buffer post failed with status: {post_status}"
+
+            return jsonify({
+                "success": True,
+                "ready": bool(link),
+                "link": link,
+                "status": post_status,
+                "error_message": error_msg,
+            })
+
+        except Exception as e:
+            return jsonify({"success": False, "error": f"LinkedIn check error: {str(e)}"}), 500
+
+    # ── Other platforms (X, Instagram, Facebook): use Buffer REST API v1 ──
     tokens = []
     if platform:
         if platform.lower() in ["x", "instagram", "twitter"]:
@@ -322,21 +390,13 @@ def check_link():
     for token in tokens:
         try:
             url = f"https://api.bufferapp.com/1/updates/{post_id}.json"
-            res = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=5)
+            res = req_lib.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=5)
             if res.status_code != 200:
                 last_error = f"Buffer API error: {res.status_code}"
                 continue
                 
             data = res.json()
             service_link = data.get("service_link")
-            update_id = data.get("service_update_id")
-            
-            # Detect platform if it was missing
-            effective_platform = platform or data.get("profile_service")
-            
-            # Proactive logic for LinkedIn if service_link is null but ID exists
-            if not service_link and effective_platform == "linkedin" and update_id and "urn:li:" in update_id:
-                service_link = f"https://www.linkedin.com/feed/update/{update_id}"
                 
             error_msg = None
             if data.get("status") in ["error", "failed"]:
