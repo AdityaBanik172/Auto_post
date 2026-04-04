@@ -205,8 +205,8 @@ class LinkedIn:
             }
         """
         query = """
-            query GetPost($id: String!) {
-                post(id: $id) {
+            query GetPost($input: PostInput!) {
+                post(input: $input) {
                     id
                     externalLink
                     status
@@ -214,7 +214,7 @@ class LinkedIn:
             }
         """
 
-        status_code, data = self.graphql_query(query, {"id": post_id})
+        status_code, data = self.graphql_query(query, {"input": {"id": post_id}})
 
         if _VERBOSE:
             print(f"[get_post_link] HTTP {status_code}")

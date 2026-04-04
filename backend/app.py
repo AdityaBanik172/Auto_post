@@ -323,8 +323,8 @@ def check_link():
 
             # Query the post via GraphQL
             gql_query = """
-                query GetPost($id: String!) {
-                    post(id: $id) {
+                query GetPost($input: PostInput!) {
+                    post(input: $input) {
                         id
                         externalLink
                         status
@@ -333,7 +333,7 @@ def check_link():
             """
             gql_res = http_session.post(
                 graphql_url,
-                json={"query": gql_query, "variables": {"id": post_id}},
+                json={"query": gql_query, "variables": {"input": {"id": post_id}}},
                 timeout=10,
             )
             gql_data = gql_res.json()
