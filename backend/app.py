@@ -1,6 +1,8 @@
+import hashlib
 import io
 import json
 import os
+import secrets
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -16,7 +18,6 @@ try:
     from .X.create_post import XPoster
     from .instagram.create_post import InstagramPoster
     from .facebook.create_post import FacebookPoster
-    from .cloudinary_client import upload_file_to_cloudinary
 except (ImportError, ValueError):
     # Local script mode
     try:
@@ -25,7 +26,6 @@ except (ImportError, ValueError):
         from X.create_post import XPoster
         from instagram.create_post import InstagramPoster
         from facebook.create_post import FacebookPoster
-        from cloudinary_client import upload_file_to_cloudinary
     except ImportError:
         # Fallback for nested local run
         from .linkedin.create_post import LinkedIn
@@ -33,7 +33,6 @@ except (ImportError, ValueError):
         from .X.create_post import XPoster
         from .instagram.create_post import InstagramPoster
         from .facebook.create_post import FacebookPoster
-        from .cloudinary_client import upload_file_to_cloudinary
 
 # Robust path detection for Vercel
 _HERE = Path(__file__).resolve().parent
@@ -131,8 +130,58 @@ def api_config():
     return jsonify({"api_base_url": _backend_api_base_for_request()})
 
 
+# ---------------------------------------------------------------------------
+# Simple token-based authentication
+# ---------------------------------------------------------------------------
+_active_tokens = set()  # In-memory token store (resets on restart)
+
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    """Validate username/password against .env and return a session token."""
+    data = request.get_json(silent=True) or {}
+    username = data.get("username", "").strip()
+    password = data.get("password", "").strip()
+
+    expected_user = (os.getenv("AUTH_USERNAME") or "").strip()
+    expected_pass = (os.getenv("AUTH_PASSWORD") or "").strip()
+
+    if not expected_user or not expected_pass:
+        return jsonify({"success": False, "message": "Auth not configured on server."}), 500
+
+    if username == expected_user and password == expected_pass:
+        token = secrets.token_hex(32)
+        _active_tokens.add(token)
+        return jsonify({"success": True, "token": token})
+
+    return jsonify({"success": False, "message": "Invalid username or password."}), 401
+
+
+@app.route("/api/logout", methods=["POST"])
+def logout():
+    """Invalidate the current session token."""
+    auth = request.headers.get("Authorization", "")
+    token = auth.replace("Bearer ", "").strip()
+    _active_tokens.discard(token)
+    return jsonify({"success": True})
+
+
+def _require_auth():
+    """Check for a valid Bearer token. Returns an error response or None."""
+    auth = request.headers.get("Authorization", "")
+    token = auth.replace("Bearer ", "").strip()
+    if not token or token not in _active_tokens:
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+    return None
+
+
 @app.route('/api/post', methods=['POST'])
 def create_post():
+    # Auth guard
+    auth_err = _require_auth()
+    if auth_err:
+        return auth_err
+
     content = request.form.get('content', '').strip()
     images = request.files.getlist('images')
     
@@ -146,25 +195,15 @@ def create_post():
         return jsonify({"success": False, "message": "At least one platform must be selected."}), 400
 
     def _upload_assets(files_list):
-        """Helper to upload files to either ImgBB or Cloudinary based on type."""
-        results = [] # List of {type: 'image'|'video'|'document', url: '...', thumbnail: '...'}
+        """Helper to upload image files to ImgBB."""
+        results = []
         if not files_list:
             return results
             
         def _upload_one(idx, filename, blob, mimetype):
-            # Images -> ImgBB (legacy)
-            if mimetype.startswith('image/'):
-                ok, out = upload_image_to_imgbb(io.BytesIO(blob), filename)
-                if not ok: raise Exception(f"ImgBB Failed: {out}")
-                return idx, {"type": "image", "url": out, "thumbnail": out}
-            
-            # Videos/PDFs -> Cloudinary
-            ok, url, res_type, thumb = upload_file_to_cloudinary(io.BytesIO(blob), filename)
-            if not ok: raise Exception(f"Cloudinary Failed: {url}")
-            
-            # Map Cloudinary resource_type to Buffer types
-            b_type = "video" if res_type == "video" else "document"
-            return idx, {"type": b_type, "url": url, "thumbnail": thumb}
+            ok, out = upload_image_to_imgbb(io.BytesIO(blob), filename)
+            if not ok: raise Exception(f"ImgBB Failed: {out}")
+            return idx, {"type": "image", "url": out, "thumbnail": out}
 
         tasks = []
         for img in files_list:
