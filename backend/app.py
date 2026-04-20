@@ -14,7 +14,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 try:
     # Package mode (Vercel)
     from .linkedin.create_post import LinkedIn
-    from .cloudinary_client import upload_file_to_cloudinary
+    from .cloudinary_client import upload_file_to_cloudinary, upload_for_instagram
     from .X.create_post import XPoster
     from .instagram.create_post import InstagramPoster
     from .facebook.create_post import FacebookPoster
@@ -22,14 +22,14 @@ except (ImportError, ValueError):
     # Local script mode
     try:
         from linkedin.create_post import LinkedIn
-        from cloudinary_client import upload_file_to_cloudinary
+        from cloudinary_client import upload_file_to_cloudinary, upload_for_instagram
         from X.create_post import XPoster
         from instagram.create_post import InstagramPoster
         from facebook.create_post import FacebookPoster
     except ImportError:
         # Fallback for nested local run
         from .linkedin.create_post import LinkedIn
-        from .cloudinary_client import upload_file_to_cloudinary
+        from .cloudinary_client import upload_file_to_cloudinary, upload_for_instagram
         from .X.create_post import XPoster
         from .instagram.create_post import InstagramPoster
         from .facebook.create_post import FacebookPoster
@@ -194,14 +194,16 @@ def create_post():
     if not platforms:
         return jsonify({"success": False, "message": "At least one platform must be selected."}), 400
 
-    def _upload_assets(files_list):
-        """Upload files to Cloudinary. Returns a list of asset dicts."""
+    def _upload_assets(files_list, for_instagram=False):
+        """Upload files to Cloudinary. Uses Instagram-optimized upload when for_instagram=True."""
         results = []
         if not files_list:
             return results
-            
+
+        uploader = upload_for_instagram if for_instagram else upload_file_to_cloudinary
+
         def _upload_one(idx, filename, blob, mimetype):
-            ok, url, res_type, thumbnail_url = upload_file_to_cloudinary(io.BytesIO(blob), filename)
+            ok, url, res_type, thumbnail_url = uploader(io.BytesIO(blob), filename)
             if not ok: raise Exception(f"Cloudinary upload failed: {url}")
             asset_type = "video" if res_type == "video" else "image"
             return idx, {"type": asset_type, "url": url, "thumbnail": thumbnail_url or url}
@@ -229,20 +231,65 @@ def create_post():
         if mode == 'custom':
             for p in platforms:
                 p_content = request.form.get(f'{p}_content', '').strip()
-                p_files = request.files.getlist(f'{p}_images') # still named 'images' in form for now
+                p_files = request.files.getlist(f'{p}_images')
                 if not p_content:
                     return jsonify({"success": False, "message": f"Content for {p} is required in custom mode."}), 400
                 
-                assets = _upload_assets(p_files)
+                assets = _upload_assets(p_files, for_instagram=(p == 'instagram'))
                 platform_data[p] = {"content": p_content, "assets": assets}
         else:
-            # Same mode
+            # Same mode — read blobs once, upload per-service as needed
             if not content:
                 return jsonify({"success": False, "message": "Post content is required."}), 400
             
-            assets = _upload_assets(images)
+            # Read all file blobs once
+            raw_files = []
+            for img in images:
+                if img and img.filename:
+                    raw_files.append((img.filename, img.read(), img.content_type))
+
+            has_instagram = 'instagram' in platforms
+            has_others = any(p != 'instagram' for p in platforms)
+
+            standard_assets = []
+            instagram_assets = []
+
+            if raw_files:
+                # Standard Cloudinary upload for non-Instagram platforms
+                if has_others:
+                    def _std(idx, fn, blob):
+                        ok, url, res_type, thumb = upload_file_to_cloudinary(io.BytesIO(blob), fn)
+                        if not ok: raise Exception(f"Cloudinary upload failed: {url}")
+                        t = "video" if res_type == "video" else "image"
+                        return idx, {"type": t, "url": url, "thumbnail": thumb or url}
+                    ordered = [None] * len(raw_files)
+                    with ThreadPoolExecutor(max_workers=min(8, len(raw_files))) as ex:
+                        futs = [ex.submit(_std, i, fn, blob) for i, (fn, blob, _) in enumerate(raw_files)]
+                        for fut in as_completed(futs):
+                            idx, out = fut.result()
+                            ordered[idx] = out
+                    standard_assets = ordered
+
+                # Instagram-optimized upload (aspect ratio + format fixes)
+                if has_instagram:
+                    def _insta(idx, fn, blob):
+                        ok, url, res_type, thumb = upload_for_instagram(io.BytesIO(blob), fn)
+                        if not ok: raise Exception(f"Cloudinary upload failed: {url}")
+                        t = "video" if res_type == "video" else "image"
+                        return idx, {"type": t, "url": url, "thumbnail": thumb or url}
+                    ordered = [None] * len(raw_files)
+                    with ThreadPoolExecutor(max_workers=min(8, len(raw_files))) as ex:
+                        futs = [ex.submit(_insta, i, fn, blob) for i, (fn, blob, _) in enumerate(raw_files)]
+                        for fut in as_completed(futs):
+                            idx, out = fut.result()
+                            ordered[idx] = out
+                    instagram_assets = ordered
+
             for p in platforms:
-                platform_data[p] = {"content": content, "assets": assets}
+                if p == 'instagram':
+                    platform_data[p] = {"content": content, "assets": instagram_assets}
+                else:
+                    platform_data[p] = {"content": content, "assets": standard_assets}
     except Exception as e:
         return jsonify({"success": False, "message": f"Upload error: {str(e)}"}), 500
 
