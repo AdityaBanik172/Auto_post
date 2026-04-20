@@ -15,6 +15,7 @@ try:
     # Package mode (Vercel)
     from .linkedin.create_post import LinkedIn
     from .linkedin.imgbb_client import upload_image_to_imgbb
+    from .cloudinary_client import upload_file_to_cloudinary
     from .X.create_post import XPoster
     from .instagram.create_post import InstagramPoster
     from .facebook.create_post import FacebookPoster
@@ -23,6 +24,7 @@ except (ImportError, ValueError):
     try:
         from linkedin.create_post import LinkedIn
         from linkedin.imgbb_client import upload_image_to_imgbb
+        from cloudinary_client import upload_file_to_cloudinary
         from X.create_post import XPoster
         from instagram.create_post import InstagramPoster
         from facebook.create_post import FacebookPoster
@@ -30,6 +32,7 @@ except (ImportError, ValueError):
         # Fallback for nested local run
         from .linkedin.create_post import LinkedIn
         from .linkedin.imgbb_client import upload_image_to_imgbb
+        from .cloudinary_client import upload_file_to_cloudinary
         from .X.create_post import XPoster
         from .instagram.create_post import InstagramPoster
         from .facebook.create_post import FacebookPoster
@@ -194,8 +197,8 @@ def create_post():
     if not platforms:
         return jsonify({"success": False, "message": "At least one platform must be selected."}), 400
 
-    def _upload_assets(files_list):
-        """Helper to upload image files to ImgBB."""
+    def _upload_assets_imgbb(files_list):
+        """Upload image files to ImgBB (used by X, LinkedIn, Facebook)."""
         results = []
         if not files_list:
             return results
@@ -222,6 +225,41 @@ def create_post():
                 ordered[idx] = out
         return ordered
 
+    def _upload_assets_cloudinary(files_list):
+        """Upload image files to Cloudinary (used by Instagram)."""
+        results = []
+        if not files_list:
+            return results
+            
+        def _upload_one(idx, filename, blob, mimetype):
+            ok, url, res_type, thumbnail_url = upload_file_to_cloudinary(io.BytesIO(blob), filename)
+            if not ok: raise Exception(f"Cloudinary Failed: {url}")
+            asset_type = "video" if res_type == "video" else "image"
+            return idx, {"type": asset_type, "url": url, "thumbnail": thumbnail_url or url}
+
+        tasks = []
+        for img in files_list:
+            if img and img.filename:
+                tasks.append((img.filename, img.read(), img.content_type))
+        
+        if not tasks:
+            return results
+
+        max_workers = min(8, len(tasks))
+        ordered = [None] * len(tasks)
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = [ex.submit(_upload_one, i, fn, blob, mime) for i, (fn, blob, mime) in enumerate(tasks)]
+            for fut in as_completed(futs):
+                idx, out = fut.result()
+                ordered[idx] = out
+        return ordered
+
+    def _upload_for_platform(platform, files_list):
+        """Route uploads: Instagram → Cloudinary, everything else → ImgBB."""
+        if platform == 'instagram':
+            return _upload_assets_cloudinary(files_list)
+        return _upload_assets_imgbb(files_list)
+
     # Prepare data for each platform
     platform_data = {}
     try:
@@ -232,16 +270,62 @@ def create_post():
                 if not p_content:
                     return jsonify({"success": False, "message": f"Content for {p} is required in custom mode."}), 400
                 
-                assets = _upload_assets(p_files)
+                assets = _upload_for_platform(p, p_files)
                 platform_data[p] = {"content": p_content, "assets": assets}
         else:
-            # Same mode
+            # Same mode — read file blobs once, upload per-service as needed
             if not content:
                 return jsonify({"success": False, "message": "Post content is required."}), 400
             
-            assets = _upload_assets(images)
+            # Read all image blobs once so we can re-upload to different services
+            raw_files = []
+            for img in images:
+                if img and img.filename:
+                    raw_files.append((img.filename, img.read(), img.content_type))
+
+            needs_imgbb = any(p in platforms for p in ('linkedin', 'x', 'facebook'))
+            needs_cloudinary = 'instagram' in platforms
+
+            imgbb_assets = []
+            cloudinary_assets = []
+
+            if raw_files:
+                # Upload to ImgBB if any non-Instagram platform needs it
+                if needs_imgbb:
+                    def _imgbb_one(idx, fn, blob):
+                        ok, out = upload_image_to_imgbb(io.BytesIO(blob), fn)
+                        if not ok: raise Exception(f"ImgBB Failed: {out}")
+                        return idx, {"type": "image", "url": out, "thumbnail": out}
+
+                    ordered = [None] * len(raw_files)
+                    with ThreadPoolExecutor(max_workers=min(8, len(raw_files))) as ex:
+                        futs = [ex.submit(_imgbb_one, i, fn, blob) for i, (fn, blob, _) in enumerate(raw_files)]
+                        for fut in as_completed(futs):
+                            idx, out = fut.result()
+                            ordered[idx] = out
+                    imgbb_assets = ordered
+
+                # Upload to Cloudinary if Instagram is selected
+                if needs_cloudinary:
+                    def _cloud_one(idx, fn, blob):
+                        ok, url, res_type, thumb = upload_file_to_cloudinary(io.BytesIO(blob), fn)
+                        if not ok: raise Exception(f"Cloudinary Failed: {url}")
+                        asset_type = "video" if res_type == "video" else "image"
+                        return idx, {"type": asset_type, "url": url, "thumbnail": thumb or url}
+
+                    ordered = [None] * len(raw_files)
+                    with ThreadPoolExecutor(max_workers=min(8, len(raw_files))) as ex:
+                        futs = [ex.submit(_cloud_one, i, fn, blob) for i, (fn, blob, _) in enumerate(raw_files)]
+                        for fut in as_completed(futs):
+                            idx, out = fut.result()
+                            ordered[idx] = out
+                    cloudinary_assets = ordered
+
             for p in platforms:
-                platform_data[p] = {"content": content, "assets": assets}
+                if p == 'instagram':
+                    platform_data[p] = {"content": content, "assets": cloudinary_assets}
+                else:
+                    platform_data[p] = {"content": content, "assets": imgbb_assets}
     except Exception as e:
         return jsonify({"success": False, "message": f"Upload error: {str(e)}"}), 500
 
