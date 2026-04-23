@@ -374,10 +374,10 @@ class InstagramPoster:
         }
 
     # ------------------------------------------------------------------
-    # Poll for the post link (5–7 s window, ~1 s intervals)
+    # Poll for the post link (up to 20 s, ~2 s intervals)
     # ------------------------------------------------------------------
 
-    def _wait_for_link(self, post_id: str, timeout: int = 7, interval: float = 1.0) -> str | None:
+    def _wait_for_link(self, post_id: str, timeout: int = 20, interval: float = 2.0) -> str | None:
         """
         Poll Buffer for the externalLink of a just-created post.
         Waits up to `timeout` seconds, checking every `interval` seconds.

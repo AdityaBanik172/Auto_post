@@ -536,22 +536,27 @@
             try {
                 const res = await fetch(`${API_BASE_URL}/check-link?post_id=${postId}&platform=${platform}`);
                 
-                // Stop immediately on server errors — retrying won't help
+                // Retry on server errors — the post was already submitted, so transient 5xx is expected
                 if (res.status >= 500) {
+                    consecutiveErrors++;
                     let errMsg = "Server error";
                     try { const d = await res.json(); errMsg = d.error || errMsg; } catch {}
-                    console.error(`[${platform}] check-link 500:`, errMsg);
-                    statusSpan.innerHTML = `
-                        <div class="flex items-center space-x-2">
-                            <span class="text-red-600 font-bold flex items-center cursor-help" title="${errMsg}">
-                                <svg class="w-4 h-4 mr-1 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
-                                <span class="truncate max-w-[120px]">Server Error</span>
-                            </span>
-                            <span class="text-slate-300">|</span>
-                            <a href="${fallback}" target="_blank" class="hover:underline flex items-center font-bold text-red-600 text-sm">Check Profile &rarr;</a>
-                        </div>
-                    `;
-                    return;
+                    console.warn(`[${platform}] check-link 500 (attempt ${consecutiveErrors}):`, errMsg);
+                    
+                    if (consecutiveErrors >= 5) {
+                        statusSpan.innerHTML = `
+                            <div class="flex items-center space-x-2">
+                                <span class="text-amber-600 font-bold flex items-center cursor-help" title="${errMsg}">
+                                    <svg class="w-4 h-4 mr-1 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+                                    <span class="truncate max-w-[120px]">Posted (link pending)</span>
+                                </span>
+                                <span class="text-slate-300">|</span>
+                                <a href="${fallback}" target="_blank" class="hover:underline flex items-center font-bold text-amber-700 text-sm">Check Profile &rarr;</a>
+                            </div>
+                        `;
+                        return;
+                    }
+                    continue; // retry
                 }
 
                 if (res.status === 404) {
