@@ -268,6 +268,7 @@ def create_post():
                 for f in shared_files:
                     if f and f.filename:
                         raw_shared.append((f.filename, f.read(), f.content_type))
+                print(f"[DEBUG] Custom mode: received {len(shared_files)} shared_images, {len(raw_shared)} valid files: {[fn for fn, _, _ in raw_shared]}")
 
                 # Upload each unique file to Cloudinary ONCE, get both URLs
                 standard_pool = [None] * len(raw_shared)
@@ -297,6 +298,7 @@ def create_post():
                     indices = [int(i.strip()) for i in indices_str.split(',') if i.strip()]
                     pool = instagram_pool if p == 'instagram' else standard_pool
                     assets = [pool[i] for i in indices if i < len(pool) and pool[i]]
+                    print(f"[DEBUG] Platform '{p}': indices={indices}, got {len(assets)} assets (pool size={len(pool)})")
                     platform_data[p] = {"content": p_content, "assets": assets}
             else:
                 # Fallback: legacy per-platform files (no dedup)

@@ -1,4 +1,5 @@
 import os
+import uuid
 import cloudinary
 import cloudinary.uploader
 from dotenv import load_dotenv
@@ -12,6 +13,17 @@ cloudinary.config(
     api_secret=os.getenv("CLOUDINARY_API_SECRET"),
     secure=True
 )
+
+
+def _unique_public_id(filename):
+    """Generate a unique public_id to prevent Cloudinary overwrites.
+
+    Using filename alone causes files with the same base name (e.g. IMG_001.jpg
+    uploaded for different platforms) to overwrite each other, resulting in only
+    one image URL being shared across all platforms.
+    """
+    base = filename.split('.')[0] if '.' in filename else filename
+    return f"{base}_{uuid.uuid4().hex[:12]}"
 
 def upload_file_to_cloudinary(file_stream, filename):
     """
@@ -30,7 +42,7 @@ def upload_file_to_cloudinary(file_stream, filename):
             
         upload_result = cloudinary.uploader.upload(
             file_stream,
-            public_id=filename.split('.')[0],
+            public_id=_unique_public_id(filename),
             resource_type="auto" # 'auto' detects the type correctly
         )
         
@@ -67,7 +79,7 @@ def upload_for_instagram(file_stream, filename):
     try:
         upload_result = cloudinary.uploader.upload(
             file_stream,
-            public_id=filename.split('.')[0],
+            public_id=_unique_public_id(filename),
             resource_type="auto"
         )
 
@@ -137,7 +149,7 @@ def upload_once_with_variants(file_stream, filename):
     try:
         upload_result = cloudinary.uploader.upload(
             file_stream,
-            public_id=filename.split('.')[0],
+            public_id=_unique_public_id(filename),
             resource_type="auto",
         )
 
