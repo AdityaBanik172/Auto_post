@@ -1,8 +1,9 @@
 import hashlib
+import hmac
 import io
 import json
 import os
-import secrets
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -131,14 +132,46 @@ def api_config():
 
 
 # ---------------------------------------------------------------------------
-# Simple token-based authentication
+# Stateless HMAC-signed token authentication (survives Vercel cold starts)
 # ---------------------------------------------------------------------------
-_active_tokens = set()  # In-memory token store (resets on restart)
+_TOKEN_MAX_AGE = 86400 * 7  # 7 days
+
+
+def _get_signing_key() -> bytes:
+    """Derive a signing key from AUTH_PASSWORD (always available in env)."""
+    secret = (os.getenv("AUTH_PASSWORD") or "fallback-secret").strip()
+    return hashlib.sha256(f"autopost-signing-{secret}".encode()).digest()
+
+
+def _create_token(username: str) -> str:
+    """Create an HMAC-signed token containing username and timestamp."""
+    payload = f"{username}:{int(time.time())}"
+    sig = hmac.new(_get_signing_key(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}:{sig}"
+
+
+def _verify_token(token: str) -> bool:
+    """Verify an HMAC-signed token. Returns True if valid and not expired."""
+    try:
+        parts = token.split(":")
+        if len(parts) != 3:
+            return False
+        username, ts_str, provided_sig = parts
+        ts = int(ts_str)
+        # Check expiry
+        if time.time() - ts > _TOKEN_MAX_AGE:
+            return False
+        # Verify signature
+        expected_payload = f"{username}:{ts_str}"
+        expected_sig = hmac.new(_get_signing_key(), expected_payload.encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(provided_sig, expected_sig)
+    except (ValueError, TypeError):
+        return False
 
 
 @app.route("/api/login", methods=["POST"])
 def login():
-    """Validate username/password against .env and return a session token."""
+    """Validate username/password against .env and return a signed session token."""
     data = request.get_json(silent=True) or {}
     username = data.get("username", "").strip()
     password = data.get("password", "").strip()
@@ -150,8 +183,7 @@ def login():
         return jsonify({"success": False, "message": "Auth not configured on server."}), 500
 
     if username == expected_user and password == expected_pass:
-        token = secrets.token_hex(32)
-        _active_tokens.add(token)
+        token = _create_token(username)
         return jsonify({"success": True, "token": token})
 
     return jsonify({"success": False, "message": "Invalid username or password."}), 401
@@ -159,18 +191,15 @@ def login():
 
 @app.route("/api/logout", methods=["POST"])
 def logout():
-    """Invalidate the current session token."""
-    auth = request.headers.get("Authorization", "")
-    token = auth.replace("Bearer ", "").strip()
-    _active_tokens.discard(token)
+    """Logout is handled client-side (token is cleared from sessionStorage)."""
     return jsonify({"success": True})
 
 
 def _require_auth():
-    """Check for a valid Bearer token. Returns an error response or None."""
+    """Verify the HMAC-signed Bearer token. Returns an error response or None."""
     auth = request.headers.get("Authorization", "")
     token = auth.replace("Bearer ", "").strip()
-    if not token or token not in _active_tokens:
+    if not token or not _verify_token(token):
         return jsonify({"success": False, "message": "Unauthorized"}), 401
     return None
 

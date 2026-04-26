@@ -911,15 +911,22 @@
                     body: formData
                 });
 
-                // If 401, force re-login
-                if (response.status === 401) {
+                // If 401 or 403, force re-login (Vercel may return 403 on cold starts)
+                if (response.status === 401 || response.status === 403) {
                     clearAuthToken();
                     showLogin();
                     showAlert('Session expired. Please log in again.', false);
                     return;
                 }
                 
-                const data = await response.json();
+                // Safely parse JSON (Vercel edge may return non-JSON error pages)
+                let data;
+                const responseText = await response.text();
+                try {
+                    data = JSON.parse(responseText);
+                } catch (parseErr) {
+                    throw new Error(`Server returned ${response.status}: ${responseText.substring(0, 200)}`);
+                }
                 showAlert(data.message, data.success, data.platforms);
                 
                 if (data.success) {
